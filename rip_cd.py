@@ -363,7 +363,10 @@ def best_genre(release):
     pool = genres if genres else tags
     if not pool:
         return None
-    pool = sorted(pool, key=lambda t: -int(t.get("count", 0)))
+    # Prefer the fuller tag name on a count tie (e.g. "vgm" vs. "video
+    # game music" at equal count) — avoids .title() mangling an acronym
+    # ("Vgm") when a non-abbreviated tag says the same thing.
+    pool = sorted(pool, key=lambda t: (-int(t.get("count", 0)), -len(t["name"])))
     return pool[0]["name"].title()
 
 def release_to_plan(release, disc_no, genre_override, user_artist):
