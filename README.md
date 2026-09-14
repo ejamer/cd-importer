@@ -11,6 +11,8 @@ MusicBrainz's DiscID database (coverage is partial).
 ## Library convention this reproduces
 
 - `~/Music/<Album Title>/` — flat, no artist-level folder
+- `~/Music/Classical Music/<Album Title>/` for classical (genre-based;
+  see `GENRE_SUBFOLDERS` — only classical routes this way for now)
 - `~/Music/<Album Title>/Disc N/` for multi-disc releases (cover art stays
   at the album root)
 - Track files: `NN. Track Title.mp3` (zero-padded)
@@ -63,9 +65,12 @@ python3 rip_cd.py --artist "X" --album "Y" --yes
 ```
 
 Other flags: `--mbid <release-id>` (pin an exact MusicBrainz release),
-`--genre` (override), `--bitrate 320k` / `--quality 0-9` (default is V0
-~245kbps VBR), `--replace` (overwrite an existing import for that
-album/disc), `--no-eject` (leave the disc in the drive when done).
+`--genre` (override), `--subfolder "Name"` (override the category
+subfolder, or pass `""` to force flat placement), `--boxset PATH` /
+`--save-to-boxset PATH` / `--volume-label` (see Box-set cache below),
+`--bitrate 320k` / `--quality 0-9` (default is V0 ~245kbps VBR),
+`--replace` (overwrite an existing import for that album/disc),
+`--no-eject` (leave the disc in the drive when done).
 
 Logs for every run are written to `logs/`.
 
@@ -78,3 +83,29 @@ vs. an existing "Dark Side Of The Moon" folder). If a match is found and
 its files are below ~192kbps (e.g. the original library's 128kbps CBR
 rips), it tells you so and offers to replace it as a quality upgrade
 rather than just cancel-or-duplicate.
+
+## Box-set cache (for multi-CD compilations)
+
+Large budget box sets (e.g. a 50-CD classical anthology) are often
+poorly catalogued on MusicBrainz/Discogs per individual disc — wrong
+track counts, wrong durations, or no data at all for a given disc. Once
+you've identified a disc by hand, save it so every other disc from the
+*same* box set is identified for free afterward, straight from the
+physical disc's own table of contents — no network lookup, no risk of
+a bad match:
+
+```
+# First disc from a set: identify however you can (manual/indie
+# process below), confirm, then save it as you rip
+python3 rip_cd.py --tracklist-json plan.json --save-to-boxset boxsets/my-set.json --yes
+
+# Every later disc from the same set: instant, offline match by TOC
+# fingerprint (track count + per-track durations) if it's been seen before
+python3 rip_cd.py --boxset boxsets/my-set.json
+```
+
+`--boxset` falls through to normal identification if the disc isn't in
+the cache yet — nothing blocks you from importing an unseen disc from
+the set. `boxsets/*.json` are plain JSON, safe to hand-edit (add a
+`default_cover_url` at the top level if the set only has one cover for
+the whole box, common for budget compilations — see `CLAUDE.md`).

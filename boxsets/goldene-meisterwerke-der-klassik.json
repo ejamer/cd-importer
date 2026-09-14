@@ -1,0 +1,77 @@
+{
+  "set_name": "Goldene Meisterwerke der Klassik (Classica d'Oro, 50-CD box)",
+  "volumes": [
+    {
+      "label": "Volume ? (Tchaikovsky: Nutcracker/R&J/Capriccio Italien)",
+      "track_durations_sec": [
+        198.5,
+        167.8,
+        129.5,
+        75.7,
+        221.2,
+        84.1,
+        160.2,
+        430.0,
+        1256.8,
+        899.9
+      ],
+      "artist": "Pyotr Ilyich Tchaikovsky",
+      "album": "The Nutcracker Suite / Romeo and Juliet / Capriccio Italien",
+      "genre": "Classical",
+      "cover_url": null,
+      "tracks": [
+        {
+          "number": 1,
+          "title": "The Nutcracker Suite, Op. 71a: I. Miniature Overture",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 2,
+          "title": "The Nutcracker Suite, Op. 71a: II. March",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 3,
+          "title": "The Nutcracker Suite, Op. 71a: III. Dance of the Sugar Plum Fairy",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 4,
+          "title": "The Nutcracker Suite, Op. 71a: IV. Russian Dance (Trepak)",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 5,
+          "title": "The Nutcracker Suite, Op. 71a: V. Arabian Dance",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 6,
+          "title": "The Nutcracker Suite, Op. 71a: VI. Chinese Dance",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 7,
+          "title": "The Nutcracker Suite, Op. 71a: VII. Dance of the Reed Flutes",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 8,
+          "title": "The Nutcracker Suite, Op. 71a: VIII. Waltz of the Flowers",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 9,
+          "title": "Romeo and Juliet, Fantasy Overture",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        },
+        {
+          "number": 10,
+          "title": "Capriccio Italien, Op. 45",
+          "artist": "Pyotr Ilyich Tchaikovsky"
+        }
+      ]
+    }
+  ],
+  "default_cover_url": "https://i.discogs.com/yoj7v9oq-XXHsTKDJdvYuTSGx5P4gNVS0EakuNKNOWw/rs:fit/g:sm/q:90/h:600/w:598/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTE4NjA4/MTQ5LTE2MjA0NTU3/MTQtODc5NS5qcGVn.jpeg"
+}

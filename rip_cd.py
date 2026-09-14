@@ -88,6 +88,21 @@ def sanitize(name):
 def target_dir_for(album_dir, plan):
     return album_dir if plan["disc_total"] == 1 else os.path.join(album_dir, f"Disc {plan['disc_no']}")
 
+# Genres (case-insensitive substring match against the plan's genre) that
+# get filed under a category subfolder instead of flat in ~/Music. Only
+# classical is active — add more entries here if/when asked, don't infer
+# other categories on your own.
+GENRE_SUBFOLDERS = {"classical": "Classical Music"}
+
+def genre_subfolder(genre):
+    if not genre:
+        return None
+    genre_lower = genre.lower()
+    for keyword, folder in GENRE_SUBFOLDERS.items():
+        if keyword in genre_lower:
+            return folder
+    return None
+
 _mbz = None
 def mb():
     """musicbrainzngs module, configured once."""
@@ -182,18 +197,25 @@ def _title_key(s):
     s = re.sub(r"\bthe\b", "", s, flags=re.IGNORECASE)
     return _normkey(s)
 
-def find_fuzzy_duplicate(album_title):
-    """Scan ~/Music for an existing album folder that's probably the same
-    album under a differently-spelled/punctuated/cased title (exact-name
-    duplicate check elsewhere won't catch these)."""
+def find_fuzzy_duplicate(album_title, expect_path=None):
+    """Scan ~/Music (and any known category subfolder — see
+    GENRE_SUBFOLDERS) for an existing album folder that's probably the
+    same album under a differently-spelled/punctuated/cased title
+    (exact-name duplicate check elsewhere won't catch these). Returns a
+    path relative to MUSIC_ROOT, or None."""
     key = _title_key(album_title)
-    if not key or not os.path.isdir(MUSIC_ROOT):
+    if not key:
         return None
-    for name in os.listdir(MUSIC_ROOT):
-        if name.startswith(".") or not os.path.isdir(os.path.join(MUSIC_ROOT, name)):
+    for base in ("", *GENRE_SUBFOLDERS.values()):
+        search_dir = os.path.join(MUSIC_ROOT, base)
+        if not os.path.isdir(search_dir):
             continue
-        if _title_key(name) == key and sanitize(album_title) != name:
-            return name
+        for name in os.listdir(search_dir):
+            if name.startswith(".") or not os.path.isdir(os.path.join(search_dir, name)):
+                continue
+            rel = os.path.join(base, name) if base else name
+            if _title_key(name) == key and rel != expect_path:
+                return rel
     return None
 
 # Anything ripped below this is presumed old/low-quality (matches the
@@ -227,12 +249,31 @@ def bitrate_upgrade_note(dir_path):
                 f"default (~245kbps V0) — replacing would upgrade audio quality.")
     return ""
 
+def _has_latin(s):
+    return any("a" <= c.lower() <= "z" for c in s or "")
+
+def _credit_name(ac_artist, user_artist, user_key):
+    """Best display name for one artist-credit entry: the exact spelling
+    the user typed, if this is clearly the same artist after stripping
+    stylized Unicode/punctuation (MusicBrainz logo spellings like
+    'JAŸ‐Z'); else a Latin rendering derived from sort-name when the
+    canonical name is in a non-Latin script (common for classical/
+    international releases catalogued in the original language, e.g.
+    'Пётр Ильич Чайковский' whose sort-name is 'Tchaikovsky, Pyotr
+    Ilyich'); else the name as MusicBrainz has it."""
+    name = ac_artist.get("name", "")
+    if user_key and _normkey(name) == user_key:
+        return user_artist
+    if not _has_latin(name):
+        sort_name = ac_artist.get("sort-name", "")
+        if _has_latin(sort_name):
+            last, _, rest = sort_name.partition(",")
+            return f"{rest.strip()} {last.strip()}" if rest else sort_name
+    return name
+
 def normalize_credit(artist_credit, user_artist):
-    """Join an MB artist-credit list into a string, but swap in the exact
-    spelling the user typed (--artist) wherever an entry is 'the same
-    artist' after stripping stylized Unicode/punctuation — MusicBrainz
-    releases often use a stylized logo spelling (e.g. 'JAŸ‐Z') instead of
-    the plain name."""
+    """Join an MB artist-credit list into a display string — see
+    _credit_name() for the per-entry logic."""
     if not artist_credit:
         return None
     user_key = _normkey(user_artist)
@@ -241,10 +282,7 @@ def normalize_credit(artist_credit, user_artist):
         if isinstance(ac, str):
             parts.append(ac)
             continue
-        name = ac.get("artist", {}).get("name", "")
-        if user_key and _normkey(name) == user_key:
-            name = user_artist
-        parts.append(name)
+        parts.append(_credit_name(ac.get("artist", {}), user_artist, user_key))
         parts.append(ac.get("joinphrase", ""))
     return "".join(parts)
 
@@ -371,17 +409,77 @@ def blank_plan(artist, album, disc_no, n_tracks, genre_override, disc_durations=
                     for i in range(1, n_tracks + 1)],
     }
 
+# --- Box-set cache: for multi-CD compilations where MusicBrainz/Discogs
+# per-disc data is unreliable (see CLAUDE.md). Once a disc's tracklist is
+# confirmed by hand, save it (--save-to-boxset); future discs from the
+# SAME set are identified for free from the physical TOC alone (track
+# count + per-track durations), no network lookup needed.
+
+def load_boxset(path):
+    if not os.path.exists(path):
+        return {"set_name": os.path.splitext(os.path.basename(path))[0], "volumes": []}
+    with open(path) as f:
+        return json.load(f)
+
+def find_boxset_volume(boxset, disc_durations, tolerance=3.0):
+    """Match this disc's real TOC against cached volumes by track count +
+    per-track duration (same physical pressing reads near-identically —
+    a few seconds' tolerance absorbs read variance). Returns the matching
+    volume dict, or None."""
+    if not disc_durations:
+        return None
+    for vol in boxset.get("volumes", []):
+        cached = vol.get("track_durations_sec") or []
+        if len(cached) == len(disc_durations) and \
+           all(abs(a - b) <= tolerance for a, b in zip(cached, disc_durations)):
+            return vol
+    return None
+
+def volume_to_plan(vol, boxset=None):
+    return {
+        "mbid": None,
+        # Per-volume cover_url wins; falls back to the box's own cover
+        # (many budget multi-disc sets have one box photo, no per-disc art).
+        "cover_url": vol.get("cover_url") or (boxset or {}).get("default_cover_url"),
+        "artist": vol["artist"],
+        "album": vol["album"],
+        "genre": vol.get("genre"),
+        "disc_no": 1,
+        "disc_total": 1,
+        "tracks": vol["tracks"],
+    }
+
+def save_boxset_volume(path, plan, disc_durations, label=None):
+    boxset = load_boxset(path)
+    default_cover = boxset.get("default_cover_url")
+    boxset.setdefault("volumes", []).append({
+        "label": label or f"Volume {len(boxset.get('volumes', [])) + 1}",
+        "track_durations_sec": [round(d, 1) for d in disc_durations],
+        "artist": plan["artist"],
+        "album": plan["album"],
+        "genre": plan.get("genre"),
+        # Only store per-volume if it differs from the box default, to keep the cache lean.
+        "cover_url": plan.get("cover_url") if plan.get("cover_url") != default_cover else None,
+        "tracks": [{"number": t["number"], "title": t["title"], "artist": t.get("artist")}
+                    for t in plan["tracks"]],
+    })
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(boxset, f, indent=2, ensure_ascii=False)
+
 def fmt_dur(sec):
     if sec is None:
         return None
     m, s = divmod(int(round(sec)), 60)
     return f"{m}:{s:02d}"
 
-def print_plan(plan, disc_track_count, disc_durations=None):
+def print_plan(plan, disc_track_count, disc_durations=None, target_dir=None):
     log(f"\nProposed import:")
     log(f"  Artist : {plan['artist']}")
     log(f"  Album  : {plan['album']}")
     log(f"  Genre  : {plan['genre'] or '(none)'}")
+    if target_dir:
+        log(f"  Path   : {target_dir}")
     log(f"  Disc   : {plan['disc_no']} of {plan['disc_total']}")
     log(f"  Tracks : {len(plan['tracks'])}"
         + (f"  (disc reports {disc_track_count})" if disc_track_count else ""))
@@ -490,8 +588,18 @@ def main():
     ap.add_argument("--album", help="Omit to auto-identify the disc by MusicBrainz DiscID")
     ap.add_argument("--device", default=DEVICE)
     ap.add_argument("--mbid", help="Specific MusicBrainz release ID (skip search)")
+    ap.add_argument("--boxset", metavar="PATH", help="Try to identify the disc from this box-set "
+                     "cache file (by TOC fingerprint) before anything else; falls through to the "
+                     "normal identification if no cached volume matches")
+    ap.add_argument("--save-to-boxset", metavar="PATH", help="After confirming the plan, append it "
+                     "to this box-set cache file (creating it if needed) for future TOC lookups")
+    ap.add_argument("--volume-label", help='Label for --save-to-boxset (e.g. "Volume 7"); '
+                     "default auto-numbers")
     ap.add_argument("--disc", type=int, default=1, help="Which physical disc you're ripping (multi-disc releases)")
     ap.add_argument("--genre", help="Override/force genre tag")
+    ap.add_argument("--subfolder", help='Category subfolder under ~/Music (e.g. "Classical Music"). '
+                     'Default: auto from genre via GENRE_SUBFOLDERS (currently just classical); '
+                     'pass "" to force flat placement even if genre would auto-route.')
     ap.add_argument("--list-candidates", action="store_true", help="Show MusicBrainz matches and exit (no ripping)")
     ap.add_argument("--dump-tracklist", metavar="PATH", help="Write the proposed metadata/tracklist to PATH as JSON and exit, for hand-editing")
     ap.add_argument("--tracklist-json", metavar="PATH", help="Use this (possibly hand-edited) JSON instead of querying MusicBrainz")
@@ -516,9 +624,19 @@ def main():
         print(f"Disc reports {expected} track(s).")
 
     # --- Build the plan (metadata + tracklist) ---
+    boxset_vol, boxset_data = None, None
+    if args.boxset:
+        boxset_data = load_boxset(args.boxset)
+        boxset_vol = find_boxset_volume(boxset_data, disc_durations)
+        if not boxset_vol:
+            print(f"No cached match in {args.boxset} for this disc; falling back to normal identification.")
+
     if args.tracklist_json:
         with open(args.tracklist_json) as f:
             plan = json.load(f)
+    elif boxset_vol:
+        plan = volume_to_plan(boxset_vol, boxset_data)
+        print(f"Matched box-set cache: {boxset_vol.get('label', '?')}")
     elif args.mbid:
         plan = release_to_plan(fetch_release(args.mbid), args.disc, args.genre, args.artist)
     elif args.artist and args.album:
@@ -545,6 +663,7 @@ def main():
         plan = release_to_plan(release, args.disc, args.genre, args.artist or "")
 
     if args.dump_tracklist:
+        os.makedirs(os.path.dirname(os.path.abspath(args.dump_tracklist)), exist_ok=True)
         with open(args.dump_tracklist, "w") as f:
             json.dump(plan, f, indent=2)
         print(f"Wrote proposed metadata to {args.dump_tracklist}. Edit it, then rerun with "
@@ -552,15 +671,18 @@ def main():
         return
 
     # --- Resolve target directory & duplicate check (before we open a log/start ripping) ---
-    album_dir = os.path.join(MUSIC_ROOT, sanitize(plan["album"]))
+    subfolder = args.subfolder if args.subfolder is not None else genre_subfolder(plan["genre"])
+    album_dir = os.path.join(MUSIC_ROOT, subfolder, sanitize(plan["album"])) if subfolder \
+        else os.path.join(MUSIC_ROOT, sanitize(plan["album"]))
     target_dir = target_dir_for(album_dir, plan)
 
     existing_mp3s = []
     if os.path.isdir(target_dir):
         existing_mp3s = [f for f in os.listdir(target_dir) if f.lower().endswith(".mp3")]
-    fuzzy_dup = None if existing_mp3s else find_fuzzy_duplicate(plan["album"])
+    fuzzy_dup = None if existing_mp3s else find_fuzzy_duplicate(
+        plan["album"], expect_path=os.path.relpath(album_dir, MUSIC_ROOT))
 
-    print_plan(plan, expected, disc_durations)
+    print_plan(plan, expected, disc_durations, target_dir)
 
     if existing_mp3s:
         note = bitrate_upgrade_note(target_dir)
@@ -606,6 +728,10 @@ def main():
         if not confirm("Proceed with rip?"):
             print("Cancelled.")
             return
+
+    if args.save_to_boxset and disc_durations:
+        save_boxset_volume(args.save_to_boxset, plan, disc_durations, args.volume_label)
+        print(f"Saved to box-set cache: {args.save_to_boxset}")
 
     # --- Logging setup ---
     global _log_fh

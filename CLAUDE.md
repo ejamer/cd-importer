@@ -67,6 +67,34 @@ searches, move to this process:
    album has no cover.jpg ***` if you skip this — treat that as an
    unfinished import, not optional cleanup.
 
+## Multi-CD box sets (`--boxset`/`--save-to-boxset`)
+
+Large budget box sets (seen: a 50-CD "Classica d'Oro" classical
+anthology) are frequently catalogued badly per individual disc — even a
+correct DiscID match can point at wrong track counts/durations for that
+specific disc (see the gotcha below). Once a disc from a set is
+correctly identified by hand:
+
+1. Save it: `--save-to-boxset boxsets/<slug>.json` (plus `--volume-label`
+   if you know the printed volume number). This stores the disc's real
+   per-track durations as a TOC fingerprint alongside the confirmed
+   tracklist — `boxsets/*.json`, plain JSON, safe to inspect/hand-edit.
+2. Every later disc from the *same* set: try `--boxset boxsets/<slug>.json`
+   first. If the physical disc's TOC matches a cached volume (track
+   count + durations, ~3s tolerance), the plan comes straight from the
+   cache — no network call, no re-identification risk. Falls through to
+   normal identification if it's an unseen disc, so this is always safe
+   to try first for a set you've started caching.
+3. **Cover art**: budget box sets commonly have zero per-disc art, only
+   a photo of the outer box (confirmed on the Classica d'Oro set —
+   searched specifically for one disc's exact track combination, found
+   nothing disc-specific). Don't assume this from the box's cheapness
+   alone — check per volume the way indie CDs get checked — but once
+   confirmed, set the box's cover as `default_cover_url` at the JSON's
+   top level so every cached volume inherits it without repeating the
+   URL (`volume_to_plan()` falls back to it when a volume has no
+   `cover_url` of its own).
+
 ## Known gotchas (don't rediscover these)
 
 - **Rhythmbox shows "Unknown" quality for new V0 VBR rips** (old 128kbps
@@ -103,16 +131,56 @@ searches, move to this process:
   default there instead). Check `musicbrainzngs.musicbrainz.VALID_INCLUDES[<entity>]`
   before guessing at a new include.
 - **MusicBrainz artist names are sometimes stylized** (e.g. "JAŸ‐Z" for
-  "Jay-Z"). `normalize_credit()` fixes this against `--artist`; the
-  disc-ID auto path has no reference to normalize against, so check the
-  dumped plan.
+  "Jay-Z"), or in the artist's **original non-Latin script** (classical/
+  international releases — e.g. "Пётр Ильич Чайковский" for Tchaikovsky).
+  `normalize_credit()` fixes stylization against `--artist`, and falls
+  back to a Latin rendering of `sort-name` when the credit name has no
+  Latin letters at all (works even with no `--artist`, e.g. the disc-ID
+  auto path) — but still check the dumped plan for anything neither
+  handles.
+- **Cover Art Archive doesn't have everything, even with a valid `mbid`**
+  (404 is normal, not a bug — seen on an obscure classical reissue).
+  When it fails: query `get_release_by_id(mbid, includes=["url-rels"])`
+  for a linked Discogs release, then Discogs' public API
+  (`api.discogs.com/releases/<id>`, no auth needed) for `images[].resource_url`
+  — Discogs' own web pages 403 generic fetchers, but the API doesn't.
 - **Release-candidate track-count matching** must compare the specific
   medium being ripped, not the sum across all media — a boxset with the
   right total can have the wrong count on disc 1 alone.
+- **A DiscID match can point at genuinely bad MusicBrainz data**, not
+  just an ambiguous one — seen on a disc in a large (50-CD) budget
+  classical box set: matched via DiscID (so the right physical disc),
+  but the medium's track-count was wrong (8 vs. 10) *and* the 8 listed
+  durations didn't match the disc's real ones either (not the usual ~2s
+  pregap offset — genuinely different). Both of `print_plan()`'s
+  safeguards (track-count mismatch, duration-outlier flag) caught this
+  correctly; trust them over the match. Large/obscure box sets are
+  higher-risk for this than mainstream single releases — a third-party
+  fallback (Discogs) didn't help either here, since its tracklist grouped
+  whole multi-movement works per volume with no clean per-disc/per-track
+  structure to map against. When this happens, ask the user for the
+  physical liner notes/booklet rather than guessing from online sources.
+- **Classical MusicBrainz data can misattribute a work to the wrong
+  same-surname composer** — seen on "A Firework of Overtures": the
+  recording for "Die Fledermaus" (a Johann Strauss II operetta, common
+  knowledge) was linked to the *Richard Strauss* artist entity in raw
+  MusicBrainz data — verified via `fetch_release()`'s own
+  `artist-credit`, not a bug in this script's handling. Track
+  count/duration matched fine (this isn't the wrong-release problem
+  above), so `print_plan()`'s safeguards won't catch it — only a
+  by-composer sanity read of the tracklist will. Fix confidently when
+  the correct composer is well-established, uncontroversial fact (as
+  here), not a guess.
 - **A plan field can be computed and shown in `print_plan()` without
   reaching the files** unless also threaded into `encode_and_tag()` —
   happened with `genre`. Verify new fields land in a real output file's
   tags, not just the printed plan.
+- **Category subfolders (`GENRE_SUBFOLDERS`) only route classical, on
+  purpose** — user explicitly said other genres should stay flat. Don't
+  add more entries (Jazz, Soundtrack, etc.) without being asked, even
+  though the mechanism generalizes trivially. `find_fuzzy_duplicate()`
+  already searches inside every configured subfolder, not just
+  `MUSIC_ROOT` directly.
 
 ## Do NOT
 
