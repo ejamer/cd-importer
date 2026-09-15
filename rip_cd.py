@@ -113,14 +113,42 @@ def mb():
         _mbz = musicbrainzngs
     return _mbz
 
-def run_logged(cmd, cwd=None):
+def run_logged(cmd, cwd=None, device_gone_limit=25):
     """Run a subprocess, streaming its combined output to console+logfile
-    line by line, and raise CalledProcessError on nonzero exit."""
+    line by line, and raise CalledProcessError on nonzero exit.
+
+    Bails out early (killing the subprocess) if the drive itself
+    disappears mid-rip: cdparanoia retries a bad sector forever and
+    never notices the block device is gone, so left alone this spins
+    for hours and floods the log. "System error: No such device" is
+    cdparanoia's specific signature for that (distinct from normal
+    scratched-disc retry chatter, which doesn't say this) - seeing it
+    repeatedly means the device vanished, not that a sector is slow.
+
+    Counts total occurrences over the whole run, not a consecutive
+    streak - cdparanoia's own retry block interleaves the "No such
+    device" line with 2-3 other lines (sector/sense/transport-error
+    detail) each time, so a strict-consecutive count never advances
+    past 1. A healthy rip has zero occurrences of this phrase, so an
+    unbroken streak isn't needed to tell the two situations apart."""
     log(f"$ {' '.join(cmd)}")
     proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True, bufsize=1)
+    device_gone_count = 0
     for line in proc.stdout:
-        log(line.rstrip("\n"))
+        stripped = line.rstrip("\n")
+        log(stripped)
+        if "no such device" in stripped.lower():
+            device_gone_count += 1
+            if device_gone_count >= device_gone_limit:
+                proc.kill()
+                proc.wait()
+                raise RuntimeError(
+                    f"'{' '.join(cmd)}' reported \"No such device\" "
+                    f"{device_gone_count} times - the drive disconnected "
+                    f"mid-rip. Reconnect it (check it shows up again, e.g. "
+                    f"`ls /dev/sr0`) and rerun; nothing was written for "
+                    f"this track yet.")
     proc.wait()
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd)
