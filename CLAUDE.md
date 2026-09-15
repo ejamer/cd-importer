@@ -171,6 +171,17 @@ correctly identified by hand:
   by-composer sanity read of the tracklist will. Fix confidently when
   the correct composer is well-established, uncontroversial fact (as
   here), not a guess.
+- **`best_genre()`'s tie-break (prefer the fuller tag name) only helps
+  when tied tags mean the same thing** (e.g. "vgm" vs "video game
+  music"). It does nothing useful when tied tags are genuinely different
+  competing genres — seen on Big Bad Voodoo Daddy's self-titled album,
+  where "alternative/indie rock", "jazz", and "swing" were all tied at
+  count=2 and the longest string won by coincidence, despite the band
+  being unmistakably swing revival (tracklist: "King of Swing", "Mambo
+  Swing", "Minnie the Moocher"...). Don't try to fix this with cleverer
+  tie-break logic — genuinely ambiguous folksonomy data has no reliable
+  mechanical answer. Just eyeball the genre in the printed plan against
+  what you actually know about the artist, same as any other field.
 - **A plan field can be computed and shown in `print_plan()` without
   reaching the files** unless also threaded into `encode_and_tag()` —
   happened with `genre`. Verify new fields land in a real output file's
