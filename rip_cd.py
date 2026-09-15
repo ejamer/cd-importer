@@ -329,15 +329,31 @@ def _medium_track_counts(c):
 def _total_tracks(c):
     return sum(_medium_track_counts(c))
 
-def rank_candidates(candidates, expected_track_count):
-    """Prefer a candidate where the *specific disc we're ripping* (--disc,
-    default 1) has a track count matching the physical CD, then fewer
-    discs overall (a plain single-CD release over a boxset/reissue with
-    extra bonus discs), then original relevance/list order."""
+def _discid_medium_position(candidate, disc_id):
+    """Which medium (1-based) in this candidate's medium-list actually
+    carries the given DiscID. get_releases_by_discid can match a
+    multi-disc release without saying which of its media matched —
+    each medium's own disc-list has to be checked."""
+    for medium in candidate.get("medium-list", []):
+        for d in medium.get("disc-list", []):
+            if d.get("id") == disc_id:
+                return int(medium.get("position", 1))
+    return None
+
+def rank_candidates(candidates, expected_track_count, disc_id=None):
+    """Prefer a candidate where the *specific disc we're ripping* has a
+    track count matching the physical CD, then fewer discs overall (a
+    plain single-CD release over a boxset/reissue with extra bonus
+    discs), then original relevance/list order. When disc_id is given
+    (DiscID auto-identify path), the specific disc is whichever medium's
+    disc-list actually contains that DiscID; otherwise it's --disc,
+    default 1, since there's no other way to know which medium a plain
+    artist/album text search corresponds to."""
     def score(item):
         idx, c = item
         counts = _medium_track_counts(c)
-        disc_pos_count = counts[0] if counts else None
+        pos = _discid_medium_position(c, disc_id) if disc_id else 1
+        disc_pos_count = counts[pos - 1] if pos and pos - 1 < len(counts) else (counts[0] if counts else None)
         exact_match = (expected_track_count is not None and
                        disc_pos_count == expected_track_count)
         return (not exact_match, len(counts), idx)
@@ -359,20 +375,25 @@ def pick_release(artist, album, expected_track_count, mbid=None):
 
 def pick_release_by_discid(device, expected_track_count):
     """Try exact-match lookup via the disc's MusicBrainz DiscID first.
-    Returns (release_or_None, disc_id_or_None)."""
+    Returns (release_or_None, disc_id_or_None, matched_disc_no_or_None).
+    matched_disc_no is which medium of the release this physical disc
+    actually is (1 for a single-disc release) — the DiscID pins this
+    exactly, so for multi-disc releases it must be used instead of
+    --disc, whose default (1) would otherwise silently mistag disc 2+."""
     disc = compute_disc_id(device)
     if disc is None:
-        return None, None
+        return None, None, None
     candidates = lookup_by_discid(disc)
     if not candidates:
         log(f"Disc ID {disc.id} — no exact match in MusicBrainz's database "
             f"(common; disc-ID coverage is partial). Falling back to text search.")
-        return None, disc.id
-    best = rank_candidates(candidates, expected_track_count)[0]
+        return None, disc.id, None
+    best = rank_candidates(candidates, expected_track_count, disc_id=disc.id)[0]
+    matched_disc_no = _discid_medium_position(best, disc.id)
     log(f"Disc ID {disc.id} matched: {best['artist-credit-phrase']} — {best['title']} "
-        f"[{best['id']}] ({_total_tracks(best)} tracks, {best.get('date','?')}, "
-        f"{best.get('country','?')})")
-    return fetch_release(best["id"]), disc.id
+        f"[{best['id']}] disc {matched_disc_no or '?'} ({_total_tracks(best)} tracks total, "
+        f"{best.get('date','?')}, {best.get('country','?')})")
+    return fetch_release(best["id"]), disc.id, matched_disc_no
 
 def list_candidates(artist, album):
     candidates = search_releases(artist, album)
@@ -684,14 +705,16 @@ def main():
         plan = release_to_plan(release, args.disc, args.genre, args.artist)
     else:
         print("No --artist/--album given — identifying disc by MusicBrainz DiscID...")
-        release, disc_id = pick_release_by_discid(args.device, expected)
+        release, disc_id, matched_disc_no = pick_release_by_discid(args.device, expected)
         if release is None:
             reason = (f"DiscID {disc_id} has no match in MusicBrainz's database (common — "
                        f"coverage is partial, especially for promos/regional pressings)"
                        if disc_id else "could not read a usable DiscID from the drive")
             die(f"Could not auto-identify this disc ({reason}). "
                 f"Supply --artist and --album to search by name instead.")
-        plan = release_to_plan(release, args.disc, args.genre, args.artist or "")
+        # The DiscID pins the exact medium — trust it over --disc's default
+        # of 1, which would otherwise mistag disc 2+ of a multi-disc release.
+        plan = release_to_plan(release, matched_disc_no or args.disc, args.genre, args.artist or "")
 
     if args.dump_tracklist:
         os.makedirs(os.path.dirname(os.path.abspath(args.dump_tracklist)), exist_ok=True)
