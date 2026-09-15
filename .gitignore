@@ -2,4 +2,5 @@
 logs/
 *.template.json
 __pycache__/
+boxsets/
 
