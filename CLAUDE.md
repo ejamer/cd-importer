@@ -148,28 +148,40 @@ brand-new artist folder.
 
 `~/Music/library_manifest.json` (artists → albums → tracks, with
 per-album average bitrate and per-track `title`/`artist`/`album`/
-`album_artist`/`composer`/`track_number`/`disc_number`/`genre`/
-`duration_sec`/`bitrate_kbps`/`sample_rate_hz`) is a full rebuild from
+`album_artist`/`composer`/`performer`/`track_number`/`disc_number`/
+`genre`/`duration_sec`/`bitrate_kbps`/`sample_rate_hz` — `performer` is
+classical-only, read back from the `COMM` comment) is a full rebuild from
 scratch every time (`update_manifest()`), not an
 incremental update — simpler and can't drift out of sync, and cheap
 enough (a few seconds of tag reads) given the library only grows one CD
 at a time. It never fails a rip: a manifest error just gets logged, same
 pattern as a missing cover.jpg.
 
-## Classical: composer tagging (TCOM/TPE2)
+## Classical: composer tagging (TPE1 = composer, performer moves to COMM)
 
 Classical rips must have `composer` filled in on the plan — either the
-top-level field (whole-album composer, written to every track's `TCOM`
-and to the album's `TPE2`) or a per-track `"composer"` override for a
-mixed-composer disc (that track's `TCOM`; `TPE2` still comes from the
-top-level field, e.g. "Various Composers"). This isn't optional
-housekeeping: without it, `TPE1` (which correctly holds the *performer*
-— soloist/orchestra/conductor, not the composer) is the only thing
-Plex/iTunes/Roon have to group by, and every different soloist or
-ensemble fragments into its own "artist" — which is the exact
-findability problem that prompted adding this field on 2026-09-16.
+top-level field (whole-album composer) or a per-track `"composer"`
+override for a mixed-composer disc. This isn't optional housekeeping:
+without it, `TPE1` is the only thing most players (Rhythmbox included)
+group/browse by, and if it holds the *performer* — a different
+soloist/orchestra/conductor per track — every one of them fragments
+into its own "artist". That's the actual findability problem (first
+tackled 2026-09-16 with TCOM/TPE2 alone, which turned out insufficient
+since most players never look at those fields — fixed properly
+2026-09-17 by swapping what TPE1 holds).
 
-MusicBrainz doesn't give this to you for free: `release_to_plan()`
+So, when `composer` is set: **`TPE1` is written as the composer**, not
+the performer. The performer (soloist/orchestra/conductor — whatever
+would previously have been in `TPE1`) is written to a comment instead
+(`COMM`, English, no description — key ends up as `COMM::eng`) so it
+isn't lost, just deprioritized. `TCOM` (per-track override or the
+album-level `composer`) and `TPE2` (always the album-level `composer`,
+e.g. "Various Composers" for a mixed-composer compilation) are also set,
+for the smaller set of players that do look at those. Non-classical
+(no `composer`): `TPE1` is the performer, exactly as before — nothing
+changed there.
+
+MusicBrainz doesn't give you `composer` for free: `release_to_plan()`
 deliberately doesn't auto-derive it, because the release-level
 artist-credit it already uses for `plan["artist"]` is the *performer*
 for classical, and getting the real composer means resolving each
@@ -181,14 +193,13 @@ already know it (it's the whole reason you identified the disc), so
 this is rarely extra research, just remembering to put it in the right
 field instead of leaving it implicit in the artist/title text.
 
-Retagging existing classical albums (done as a one-time pass alongside
-adding this field): read each track's existing `TPE1`/title text for
-the composer name already embedded there (most of this library's
-classical rips have it, since composer identification was already part
-of confirming the plan — see the Fallback/Multi-CD sections above), and
-set `TCOM` per track + `TPE2` at the album level directly with mutagen,
-without re-ripping. Don't touch `TPE1` — it's already correctly the
-performer.
+Retagging existing classical albums (done as a one-time pass twice —
+first adding TCOM/TPE2 alongside the old performer-holding TPE1, then
+swapping TPE1 to composer and moving the old TPE1 value to COMM once
+TCOM/TPE2 alone proved insufficient): both passes worked directly on
+the already-ripped files with mutagen, no re-ripping needed, since the
+composer was already known/curated at rip time even where it hadn't
+been written to the right field yet.
 
 ## Known gotchas (don't rediscover these)
 

@@ -22,22 +22,27 @@ MusicBrainz's DiscID database (coverage is partial).
   art stays at the album root, one level up from `Disc N/`)
 - Track files: `NN. Track Title.mp3` (zero-padded)
 - `cover.jpg` at the album root
-- ID3v2: `TIT2` title, `TPE1` artist (per-track, so compilations/
-  soundtracks get each track's own performer, not a blanket "Various
-  Artists"), `TALB` album, `TRCK` "n/total", `TPOS` "disc/total", `TCON`
-  genre
-- Classical only: `TCOM` composer (per-track, from the plan's per-track
-  `composer` override or the album-level `composer` field) and `TPE2`
-  album artist (always the album-level `composer`, e.g. "Various
-  Composers" for a mixed-composer compilation) — lets Plex/iTunes/Roon
-  browse by composer instead of fragmenting into one artist per
-  soloist/orchestra/conductor. Not auto-derived from MusicBrainz (its
+- ID3v2 (non-classical): `TIT2` title, `TPE1` performer/artist (per-track,
+  so compilations/soundtracks get each track's own performer, not a
+  blanket "Various Artists"), `TALB` album, `TRCK` "n/total", `TPOS`
+  "disc/total", `TCON` genre
+- ID3v2 (classical only — composer known): **`TPE1` is the composer, not
+  the performer** — most players (Rhythmbox included) group/browse by
+  `TPE1` specifically, and a composer-only `TCOM`/`TPE2` alone doesn't
+  stop the "one artist per soloist/orchestra/conductor" fragmentation
+  problem, since most players never look at those fields. The performer
+  instead goes into a comment (`COMM`, English, no description). `TCOM`
+  (per-track override or album-level `composer`) and `TPE2` (always the
+  album-level `composer`, e.g. "Various Composers" for a mixed-composer
+  compilation) are set too, for the smaller set of players that do use
+  them. `composer` is not auto-derived from MusicBrainz (its
   release-level artist-credit is the performer, not the composer, for
   classical) — filled in by hand in the plan JSON, same as genre/cover
 - `~/Music/library_manifest.json` — a full catalog (artists -> albums ->
   tracks, with per-album average bitrate and per-track tag details
-  including `composer`/`album_artist`), regenerated from scratch after
-  every successful rip; see `update_manifest()` in `rip_cd.py`
+  including `composer`/`album_artist`/`performer`), regenerated from
+  scratch after every successful rip; see `update_manifest()` in
+  `rip_cd.py`
 
 ## Setup
 

@@ -672,6 +672,10 @@ def update_manifest():
             "album": tag(tags, "TALB"),
             "album_artist": tag(tags, "TPE2"),
             "composer": tag(tags, "TCOM"),
+            # Classical only: performer (orchestra/soloist/conductor) —
+            # written to a comment (COMM) since TPE1 holds the composer
+            # there instead. See encode_and_tag().
+            "performer": tag(tags, "COMM::eng"),
             "track_number": tag(tags, "TRCK"),
             "disc_number": tag(tags, "TPOS"),
             "genre": tag(tags, "TCON"),
@@ -796,12 +800,12 @@ def rip_tracks(device, n_tracks, workdir, only_tracks=None):
     log("Rip complete.")
 
 def encode_and_tag(workdir, tracks, disc_no, disc_total, album, genre, target_dir, quality_args, composer=None):
-    from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TCOM, TRCK, TPOS, TCON, ID3NoHeaderError
+    from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TCOM, TRCK, TPOS, TCON, COMM, ID3NoHeaderError
 
     os.makedirs(target_dir, exist_ok=True)
     total = len(tracks)
     for i, t in enumerate(tracks, start=1):
-        title, track_artist = t["title"], t.get("artist")
+        title, performer = t["title"], t.get("artist") or t.get("_album_artist")
         wav = os.path.join(workdir, f"track{i:02d}.cdda.wav")
         if not os.path.exists(wav):
             log(f"warning: expected {wav} not found, skipping track {i}. "
@@ -819,20 +823,27 @@ def encode_and_tag(workdir, tracks, disc_no, disc_total, album, genre, target_di
         except ID3NoHeaderError:
             tags = ID3()
         tags["TIT2"] = TIT2(encoding=3, text=title)
-        tags["TPE1"] = TPE1(encoding=3, text=track_artist or t.get("_album_artist"))
+        # Classical (composer known): TPE1 is the composer, not the
+        # performer — most players (Rhythmbox included) group/browse by
+        # TPE1 specifically, not TCOM/TPE2, so those alone don't fix the
+        # "one artist per soloist/orchestra" fragmentation problem this
+        # is meant to solve. The performer moves to a comment (COMM)
+        # instead of being lost. TCOM/TPE2 are still set too, for the
+        # smaller set of players that do use them. Non-classical (no
+        # composer): TPE1 is the performer, same as always. See CLAUDE.md.
+        track_composer = t.get("composer") or composer
+        if track_composer:
+            tags["TPE1"] = TPE1(encoding=3, text=track_composer)
+            tags["TCOM"] = TCOM(encoding=3, text=track_composer)
+            if performer:
+                tags["COMM"] = COMM(encoding=3, lang="eng", desc="", text=performer)
+        else:
+            tags["TPE1"] = TPE1(encoding=3, text=performer)
         tags["TALB"] = TALB(encoding=3, text=album)
         tags["TRCK"] = TRCK(encoding=3, text=f"{i}/{total}")
         tags["TPOS"] = TPOS(encoding=3, text=f"{disc_no}/{disc_total}")
         if genre:
             tags["TCON"] = TCON(encoding=3, text=genre)
-        # Composer (TCOM, per-track override or album default) and Album
-        # Artist (TPE2, always the album-level composer when known) —
-        # classical only, in practice: this is what lets Plex/iTunes/Roon
-        # browse by composer instead of fragmenting into one "artist" per
-        # soloist/orchestra/conductor combination. See CLAUDE.md.
-        track_composer = t.get("composer") or composer
-        if track_composer:
-            tags["TCOM"] = TCOM(encoding=3, text=track_composer)
         if composer:
             tags["TPE2"] = TPE2(encoding=3, text=composer)
         tags.save(out_path)
