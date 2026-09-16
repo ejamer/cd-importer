@@ -1,7 +1,8 @@
 # cd-importer
 
-Rips audio CDs into `~/Music` matching the existing library's folder and
-ID3 tagging convention (established years ago by Banshee), with metadata
+Rips audio CDs into `~/Music` matching the existing library's ID3
+tagging convention (established years ago by Banshee) and its
+Plex-compatible artist-folder layout (see below), with metadata
 auto-fetched from MusicBrainz. By default it identifies the disc itself
 by MusicBrainz DiscID (no typing artist/album needed — the same method
 the original library was ripped with); `--artist`/`--album` search by
@@ -10,17 +11,25 @@ MusicBrainz's DiscID database (coverage is partial).
 
 ## Library convention this reproduces
 
-- `~/Music/<Album Title>/` — flat, no artist-level folder
+- `~/Music/<Artist>/<Album Title>/` — Plex-compatible, artist-level
+  folder (reorganized from the original flat layout on 2026-09-16; see
+  `CLAUDE.md` for how ambiguous cases — compilations, feature-heavy
+  albums — were bucketed)
 - `~/Music/Classical Music/<Album Title>/` for classical (genre-based;
-  see `GENRE_SUBFOLDERS` — only classical routes this way for now)
-- `~/Music/<Album Title>/Disc N/` for multi-disc releases (cover art stays
-  at the album root)
+  see `GENRE_SUBFOLDERS` — only classical routes this way, and it's
+  flat, no artist level, deliberately excluded from the artist reorg)
+- `~/Music/<Artist>/<Album Title>/Disc N/` for multi-disc releases (cover
+  art stays at the album root, one level up from `Disc N/`)
 - Track files: `NN. Track Title.mp3` (zero-padded)
 - `cover.jpg` at the album root
 - ID3v2: `TIT2` title, `TPE1` artist (per-track, so compilations/
   soundtracks get each track's own performer, not a blanket "Various
   Artists"), `TALB` album, `TRCK` "n/total", `TPOS` "disc/total", `TCON`
   genre
+- `~/Music/library_manifest.json` — a full catalog (artists -> albums ->
+  tracks, with per-album average bitrate and per-track tag details),
+  regenerated from scratch after every successful rip; see
+  `update_manifest()` in `rip_cd.py`
 
 ## Setup
 
@@ -66,11 +75,13 @@ python3 rip_cd.py --artist "X" --album "Y" --yes
 
 Other flags: `--mbid <release-id>` (pin an exact MusicBrainz release),
 `--genre` (override), `--subfolder "Name"` (override the category
-subfolder, or pass `""` to force flat placement), `--boxset PATH` /
+subfolder — e.g. force `Classical Music` — or pass `""` to force fully
+flat placement, no artist folder either), `--boxset PATH` /
 `--save-to-boxset PATH` / `--volume-label` (see Box-set cache below),
 `--bitrate 320k` / `--quality 0-9` (default is V0 ~245kbps VBR),
 `--replace` (overwrite an existing import for that album/disc),
-`--no-eject` (leave the disc in the drive when done).
+`--no-eject` (leave the disc in the drive when done), `--no-manifest`
+(skip regenerating `library_manifest.json`).
 
 Logs for every run are written to `logs/`.
 
@@ -79,10 +90,12 @@ Logs for every run are written to `logs/`.
 Before ripping, the script checks whether the album already exists —
 both an exact folder-name match and a fuzzy match (differently spelled/
 punctuated/cased title, e.g. MusicBrainz's "The Dark Side of the Moon"
-vs. an existing "Dark Side Of The Moon" folder). If a match is found and
-its files are below ~192kbps (e.g. the original library's 128kbps CBR
-rips), it tells you so and offers to replace it as a quality upgrade
-rather than just cancel-or-duplicate.
+vs. an existing "Dark Side Of The Moon" folder). This scans `Artist/
+Album/` (two levels) for the normal case and `Classical Music/Album/`
+(one level) for classical, matching wherever each actually lives. If a
+match is found and its files are below ~192kbps (e.g. the original
+library's 128kbps CBR rips), it tells you so and offers to replace it as
+a quality upgrade rather than just cancel-or-duplicate.
 
 ## Box-set cache (for multi-CD compilations)
 

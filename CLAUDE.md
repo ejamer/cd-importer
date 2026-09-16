@@ -33,6 +33,10 @@ python3 rip_cd.py --dump-tracklist /tmp/plan.json   # identifies disc, no rip
    poll with TaskOutput rather than a long foreground wait.
 5. Report the result path and track count; don't re-list files or re-dump
    tags unless something looks wrong.
+6. `~/Music/library_manifest.json` regenerates automatically after every
+   successful rip (`update_manifest()`, called near the end of `main()`)
+   — nothing extra to do here; just know it happens, so don't propose
+   rebuilding it by hand or writing a duplicate script for the same job.
 
 If MusicBrainz has no DiscID match, the script falls back to needing
 `--artist`/`--album` — ask the user for the CD's identity rather than
@@ -94,6 +98,62 @@ correctly identified by hand:
    top level so every cached volume inherits it without repeating the
    URL (`volume_to_plan()` falls back to it when a volume has no
    `cover_url` of its own).
+
+## Artist folders & the library manifest
+
+The library was reorganized on 2026-09-16 from a flat `~/Music/<Album>/`
+layout into Plex-compatible `~/Music/<Artist>/<Album>/` (170 albums into
+87 artist folders), specifically **excluding** `Classical Music/`, which
+stays flat with no artist level. `rip_cd.py` enforces this as the
+ongoing default for every rip since — see the `album_dir` computation in
+`main()` and `find_fuzzy_duplicate()`. Nothing extra to do for a normal
+rip: MusicBrainz already gives a single clean `plan["artist"]` value
+(e.g. "Various Artists" for a genuine compilation, the real name
+otherwise), which is exactly the folder name used, sanitized the same
+way as album names.
+
+The one-time reorg itself had to make judgment calls the script doesn't
+need to make going forward, because the *old* library's files (ripped
+years ago by Banshee) had per-track `TPE1` only, no release-level
+"album artist" tag anywhere — so which folder an album with several
+distinct per-track artists belonged in wasn't mechanical:
+
+- **Single artist with guest features baked into per-track `TPE1`**
+  (e.g. "Dr. Dre featuring Eminem") **→ filed under the primary artist**
+  (Dr. Dre's *2001*, P!nk's *Greatest Hits... So Far!!!*, Jay-Z's *The
+  Black Album*, Neil Young's *Decade*, Jack Johnson's *Curious George*
+  sing-alongs, *The Fellowship of the Ring* under Howard Shore despite
+  one Enya track) — standard practice for artist albums with features,
+  confirmed with the user before executing.
+- **Genuine multi-artist compilations with no dominant artist → single
+  "Various Artists" folder** (movie soundtracks — *Pulp Fiction*,
+  *Forrest Gump*, *Boogie Nights*, *Austin Powers*, *The Faculty*, *Fear
+  and Loathing in Las Vegas* — the Disney Icon series, the Kosovar
+  refugees benefit compilation, *DJ Hero*'s Eminem/Jay-Z bundle with no
+  single primary artist) — also confirmed with the user; this is the
+  Plex/iTunes standard convention for compilations, and there's no
+  `TCMP`/`TPE2` tag anywhere in this library to fall back on instead.
+- Existing album folder names with an artist prefix baked in from the
+  old flat-namespace disambiguation (e.g. "Queen Greatest Hits") were
+  **left exactly as-is**, just nested under the artist folder — the
+  user chose not to clean up the redundancy, so don't "fix" this later
+  without asking again.
+
+If a *new* rip ever produces a genuinely ambiguous case like these
+again (rare — normally only happens with hand-built fallback plans for
+indie/uncatalogued discs where you're choosing `plan["artist"]`
+yourself), apply the same two rules rather than re-litigating them, but
+still flag the choice to the user rather than silently deciding for a
+brand-new artist folder.
+
+`~/Music/library_manifest.json` (artists → albums → tracks, with
+per-album average bitrate and per-track `title`/`artist`/`album`/`track_number`/
+`disc_number`/`genre`/`duration_sec`/`bitrate_kbps`/`sample_rate_hz`) is
+a full rebuild from scratch every time (`update_manifest()`), not an
+incremental update — simpler and can't drift out of sync, and cheap
+enough (a few seconds of tag reads) given the library only grows one CD
+at a time. It never fails a rip: a manifest error just gets logged, same
+pattern as a missing cover.jpg.
 
 ## Known gotchas (don't rediscover these)
 
@@ -187,11 +247,17 @@ correctly identified by hand:
   happened with `genre`. Verify new fields land in a real output file's
   tags, not just the printed plan.
 - **Category subfolders (`GENRE_SUBFOLDERS`) only route classical, on
-  purpose** — user explicitly said other genres should stay flat. Don't
-  add more entries (Jazz, Soundtrack, etc.) without being asked, even
-  though the mechanism generalizes trivially. `find_fuzzy_duplicate()`
-  already searches inside every configured subfolder, not just
-  `MUSIC_ROOT` directly.
+  purpose, and that's a separate mechanism from artist-folder nesting**
+  — user explicitly said only classical should get this flat,
+  genre-based `Classical Music/<Album>/` treatment. Don't add more
+  entries (Jazz, Soundtrack, etc.) without being asked, even though the
+  mechanism generalizes trivially. Everything *not* routed to a genre
+  subfolder gets `<Artist>/<Album>/` instead (see "Artist folders & the
+  library manifest" above) — don't confuse that default with "flat"; only
+  `GENRE_SUBFOLDERS` categories and an explicit `--subfolder ""` are
+  flat. `find_fuzzy_duplicate()` searches one level deep inside every
+  configured genre subfolder, and two levels deep (`Artist/Album`)
+  everywhere else.
 
 ## Do NOT
 

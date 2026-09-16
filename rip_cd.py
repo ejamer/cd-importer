@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
 rip_cd.py — Rip a CD into ~/Music matching the existing library
-convention (flat "<Album>/" folder, "NN. Title.mp3" files, ID3
-TIT2/TPE1/TALB/TRCK/TPOS/TCON, cover.jpg). Metadata from MusicBrainz,
-auto-identified by DiscID by default; pass --artist/--album to search
-by name instead. See README.md for setup and full usage.
+convention ("<Artist>/<Album>/" folders — "Classical Music/<Album>/"
+instead for classical, no artist level there — "NN. Title.mp3" files,
+ID3 TIT2/TPE1/TALB/TRCK/TPOS/TCON, cover.jpg). Metadata from
+MusicBrainz, auto-identified by DiscID by default; pass --artist/--album
+to search by name instead. See README.md for setup and full usage.
+
+After every successful rip, ~/Music/library_manifest.json (artists ->
+albums -> tracks, with bitrate and per-track tag details) is regenerated
+from scratch to reflect the current library. Pass --no-manifest to skip.
 
     python3 rip_cd.py                                    # auto-identify
     python3 rip_cd.py --artist X --album Y --dump-tracklist plan.json  # preview, no rip
@@ -89,9 +94,9 @@ def target_dir_for(album_dir, plan):
     return album_dir if plan["disc_total"] == 1 else os.path.join(album_dir, f"Disc {plan['disc_no']}")
 
 # Genres (case-insensitive substring match against the plan's genre) that
-# get filed under a category subfolder instead of flat in ~/Music. Only
-# classical is active — add more entries here if/when asked, don't infer
-# other categories on your own.
+# get filed under a flat category subfolder instead of the default
+# <Artist>/<Album>/ nesting. Only classical is active — add more entries
+# here if/when asked, don't infer other categories on your own.
 GENRE_SUBFOLDERS = {"classical": "Classical Music"}
 
 def genre_subfolder(genre):
@@ -226,22 +231,39 @@ def _title_key(s):
     return _normkey(s)
 
 def find_fuzzy_duplicate(album_title, expect_path=None):
-    """Scan ~/Music (and any known category subfolder — see
-    GENRE_SUBFOLDERS) for an existing album folder that's probably the
-    same album under a differently-spelled/punctuated/cased title
-    (exact-name duplicate check elsewhere won't catch these). Returns a
-    path relative to MUSIC_ROOT, or None."""
+    """Scan ~/Music for an existing album folder that's probably the same
+    album under a differently-spelled/punctuated/cased title (exact-name
+    duplicate check elsewhere won't catch these). Returns a path relative
+    to MUSIC_ROOT, or None.
+
+    Genre subfolders (GENRE_SUBFOLDERS, e.g. Classical Music) hold albums
+    directly, one level deep. Everything else lives under an artist
+    folder (see the 2026-09-16 reorg), so it's searched two levels deep —
+    Artist/Album — instead."""
     key = _title_key(album_title)
     if not key:
         return None
-    for base in ("", *GENRE_SUBFOLDERS.values()):
+    genre_dirs = set(GENRE_SUBFOLDERS.values())
+    for base in genre_dirs:
         search_dir = os.path.join(MUSIC_ROOT, base)
         if not os.path.isdir(search_dir):
             continue
         for name in os.listdir(search_dir):
             if name.startswith(".") or not os.path.isdir(os.path.join(search_dir, name)):
                 continue
-            rel = os.path.join(base, name) if base else name
+            rel = os.path.join(base, name)
+            if _title_key(name) == key and rel != expect_path:
+                return rel
+    for artist_name in os.listdir(MUSIC_ROOT):
+        if artist_name.startswith(".") or artist_name in genre_dirs:
+            continue
+        artist_dir = os.path.join(MUSIC_ROOT, artist_name)
+        if not os.path.isdir(artist_dir):
+            continue
+        for name in os.listdir(artist_dir):
+            if name.startswith(".") or not os.path.isdir(os.path.join(artist_dir, name)):
+                continue
+            rel = os.path.join(artist_name, name)
             if _title_key(name) == key and rel != expect_path:
                 return rel
     return None
@@ -593,6 +615,96 @@ def download_cover(dest_path, mbid=None, cover_url=None):
         "'cover_url' field in the tracklist JSON pointing at an image. ***")
     return False
 
+MANIFEST_PATH = os.path.join(MUSIC_ROOT, "library_manifest.json")
+
+def update_manifest():
+    """Rebuild ~/Music/library_manifest.json from scratch: every artist
+    folder -> album -> track, with per-album average bitrate and
+    per-track tag details (title/artist/album/track & disc number/genre/
+    duration/bitrate/sample rate). Classical Music is included as its own
+    top-level entry mirroring its actual flat "Classical Music/<Album>/"
+    layout, since it isn't split into artist folders.
+
+    Always a full rebuild rather than an incremental update — the
+    library only grows one CD at a time, so a fresh scan (a few seconds
+    of tag reads, no audio decoding) is simpler and can't drift out of
+    sync the way incremental bookkeeping could. Never raises: a manifest
+    problem shouldn't fail an otherwise-successful rip, just gets logged."""
+    from mutagen.mp3 import MP3
+
+    def tag(tags, key):
+        if not tags:
+            return None
+        v = tags.get(key)
+        return str(v) if v is not None else None
+
+    def read_track(path, rel_path):
+        try:
+            audio = MP3(path)
+        except Exception as e:
+            return {"filename": os.path.basename(path), "relative_path": rel_path, "error": str(e)}
+        tags, info = audio.tags, audio.info
+        return {
+            "filename": os.path.basename(path),
+            "relative_path": rel_path,
+            "title": tag(tags, "TIT2"),
+            "artist": tag(tags, "TPE1"),
+            "album": tag(tags, "TALB"),
+            "track_number": tag(tags, "TRCK"),
+            "disc_number": tag(tags, "TPOS"),
+            "genre": tag(tags, "TCON"),
+            "duration_sec": round(info.length, 2),
+            "bitrate_kbps": round(info.bitrate / 1000, 1),
+            "sample_rate_hz": info.sample_rate,
+        }
+
+    def scan_album(album_dir, rel_prefix):
+        tracks = []
+        has_cover = os.path.isfile(os.path.join(album_dir, "cover.jpg"))
+        subdirs = sorted(d for d in os.listdir(album_dir) if os.path.isdir(os.path.join(album_dir, d)))
+        multi_disc = bool(subdirs) and all(d.lower().startswith("disc ") for d in subdirs)
+        if multi_disc:
+            for d in subdirs:
+                dpath = os.path.join(album_dir, d)
+                for f in sorted(os.listdir(dpath)):
+                    if f.lower().endswith(".mp3"):
+                        tracks.append(read_track(os.path.join(dpath, f), f"{rel_prefix}/{d}/{f}"))
+        else:
+            for f in sorted(os.listdir(album_dir)):
+                if f.lower().endswith(".mp3"):
+                    tracks.append(read_track(os.path.join(album_dir, f), f"{rel_prefix}/{f}"))
+        bitrates = [t["bitrate_kbps"] for t in tracks if "bitrate_kbps" in t]
+        return {
+            "path": rel_prefix,
+            "num_tracks": len(tracks),
+            "avg_bitrate_kbps": round(sum(bitrates) / len(bitrates), 1) if bitrates else None,
+            "has_cover": has_cover,
+            "multi_disc": multi_disc,
+            "tracks": tracks,
+        }
+
+    try:
+        manifest = {
+            "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "music_root": MUSIC_ROOT,
+            "artists": {},
+        }
+        for entry in sorted(os.listdir(MUSIC_ROOT)):
+            entry_path = os.path.join(MUSIC_ROOT, entry)
+            if entry.startswith(".") or not os.path.isdir(entry_path):
+                continue
+            albums = {}
+            for album_name in sorted(d for d in os.listdir(entry_path) if os.path.isdir(os.path.join(entry_path, d))):
+                album_path = os.path.join(entry_path, album_name)
+                albums[album_name] = scan_album(album_path, f"{entry}/{album_name}")
+            manifest["artists"][entry] = {"albums": albums}
+        with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        log(f"Updated {MANIFEST_PATH}")
+    except Exception as e:
+        log(f"Manifest update failed ({e}) — library was ripped fine, just the "
+            f"catalog file wasn't refreshed. Rerun with --no-manifest omitted to retry.")
+
 def _wav_seconds(path):
     """Actual playable duration of a wav file in seconds, or None if it
     doesn't exist or isn't readable. Deliberately doesn't trust the
@@ -720,6 +832,8 @@ def main():
     ap.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt (non-interactive)")
     ap.add_argument("--replace", action="store_true", help="Overwrite an existing import for this album/disc without prompting")
     ap.add_argument("--no-eject", action="store_true", help="Don't eject the disc after a successful import")
+    ap.add_argument("--no-manifest", action="store_true",
+                     help="Don't regenerate ~/Music/library_manifest.json after a successful import")
     args = ap.parse_args()
 
     check_tools()
@@ -786,8 +900,19 @@ def main():
 
     # --- Resolve target directory & duplicate check (before we open a log/start ripping) ---
     subfolder = args.subfolder if args.subfolder is not None else genre_subfolder(plan["genre"])
-    album_dir = os.path.join(MUSIC_ROOT, subfolder, sanitize(plan["album"])) if subfolder \
-        else os.path.join(MUSIC_ROOT, sanitize(plan["album"]))
+    if subfolder:
+        album_dir = os.path.join(MUSIC_ROOT, subfolder, sanitize(plan["album"]))
+    elif args.subfolder == "":
+        # Explicit --subfolder "" forces truly flat placement (no genre
+        # subfolder, no artist folder either) — the escape hatch the
+        # flag has always documented, kept as-is.
+        album_dir = os.path.join(MUSIC_ROOT, sanitize(plan["album"]))
+    else:
+        # Default when no genre subfolder applies: nest under the artist
+        # folder (Plex-compatible "<Artist>/<Album>/"), matching the
+        # 2026-09-16 library reorg. Classical stays flat under its own
+        # genre subfolder, untouched by this.
+        album_dir = os.path.join(MUSIC_ROOT, sanitize(plan["artist"]), sanitize(plan["album"]))
     target_dir = target_dir_for(album_dir, plan)
 
     existing_mp3s = []
@@ -889,6 +1014,8 @@ def main():
         log(f"\nDone: {target_dir}")
         if not os.path.exists(cover_path):
             log("*** WARNING: this album has no cover.jpg. ***")
+        if not args.no_manifest:
+            update_manifest()
         if not args.no_eject:
             try:
                 subprocess.run(["eject", args.device], check=True)
