@@ -26,10 +26,18 @@ MusicBrainz's DiscID database (coverage is partial).
   soundtracks get each track's own performer, not a blanket "Various
   Artists"), `TALB` album, `TRCK` "n/total", `TPOS` "disc/total", `TCON`
   genre
+- Classical only: `TCOM` composer (per-track, from the plan's per-track
+  `composer` override or the album-level `composer` field) and `TPE2`
+  album artist (always the album-level `composer`, e.g. "Various
+  Composers" for a mixed-composer compilation) — lets Plex/iTunes/Roon
+  browse by composer instead of fragmenting into one artist per
+  soloist/orchestra/conductor. Not auto-derived from MusicBrainz (its
+  release-level artist-credit is the performer, not the composer, for
+  classical) — filled in by hand in the plan JSON, same as genre/cover
 - `~/Music/library_manifest.json` — a full catalog (artists -> albums ->
-  tracks, with per-album average bitrate and per-track tag details),
-  regenerated from scratch after every successful rip; see
-  `update_manifest()` in `rip_cd.py`
+  tracks, with per-album average bitrate and per-track tag details
+  including `composer`/`album_artist`), regenerated from scratch after
+  every successful rip; see `update_manifest()` in `rip_cd.py`
 
 ## Setup
 

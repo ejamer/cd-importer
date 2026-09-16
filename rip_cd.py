@@ -461,6 +461,18 @@ def release_to_plan(release, disc_no, genre_override, user_artist):
         "artist": album_artist,
         "album": release["title"],
         "genre": genre,
+        # Not auto-derived: MusicBrainz's release-level artist-credit is
+        # the performer for classical (which is what "artist" above
+        # already holds), not the composer — getting the composer
+        # reliably means resolving each recording's linked work and that
+        # work's composer relationship, an extra API call per track that
+        # classical MB data is too spotty to make worthwhile (see
+        # CLAUDE.md gotchas). Fill this in by hand for classical discs,
+        # same as genre/cover already get curated; leave it None
+        # otherwise. Single string = whole-album composer -> TPE2, or set
+        # a track's own "composer" key to override just that track (a
+        # multi-composer compilation) -> that track's TCOM.
+        "composer": None,
         "disc_no": disc_no,
         "disc_total": len(media),
         "tracks": tracks,
@@ -474,6 +486,7 @@ def blank_plan(artist, album, disc_no, n_tracks, genre_override, disc_durations=
         "artist": artist,
         "album": album,
         "genre": genre_override,
+        "composer": None,  # classical: fill in by hand — see release_to_plan's note
         "disc_no": disc_no,
         "disc_total": 1,
         # duration_sec pre-filled from the real disc TOC — use it to sanity-check
@@ -518,6 +531,7 @@ def volume_to_plan(vol, boxset=None):
         "artist": vol["artist"],
         "album": vol["album"],
         "genre": vol.get("genre"),
+        "composer": vol.get("composer"),
         "disc_no": 1,
         "disc_total": 1,
         "tracks": vol["tracks"],
@@ -532,10 +546,14 @@ def save_boxset_volume(path, plan, disc_durations, label=None):
         "artist": plan["artist"],
         "album": plan["album"],
         "genre": plan.get("genre"),
+        "composer": plan.get("composer"),
         # Only store per-volume if it differs from the box default, to keep the cache lean.
         "cover_url": plan.get("cover_url") if plan.get("cover_url") != default_cover else None,
-        "tracks": [{"number": t["number"], "title": t["title"], "artist": t.get("artist")}
-                    for t in plan["tracks"]],
+        "tracks": [
+            {"number": t["number"], "title": t["title"], "artist": t.get("artist"),
+             **({"composer": t["composer"]} if t.get("composer") else {})}
+            for t in plan["tracks"]
+        ],
     })
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w") as f:
@@ -552,6 +570,8 @@ def print_plan(plan, disc_track_count, disc_durations=None, target_dir=None):
     log(f"  Artist : {plan['artist']}")
     log(f"  Album  : {plan['album']}")
     log(f"  Genre  : {plan['genre'] or '(none)'}")
+    if plan.get("composer"):
+        log(f"  Composer: {plan['composer']}")
     if target_dir:
         log(f"  Path   : {target_dir}")
     log(f"  Disc   : {plan['disc_no']} of {plan['disc_total']}")
@@ -650,6 +670,8 @@ def update_manifest():
             "title": tag(tags, "TIT2"),
             "artist": tag(tags, "TPE1"),
             "album": tag(tags, "TALB"),
+            "album_artist": tag(tags, "TPE2"),
+            "composer": tag(tags, "TCOM"),
             "track_number": tag(tags, "TRCK"),
             "disc_number": tag(tags, "TPOS"),
             "genre": tag(tags, "TCON"),
@@ -773,8 +795,8 @@ def rip_tracks(device, n_tracks, workdir, only_tracks=None):
             run_logged(["cdparanoia", "-d", device, "-B", f"{t}-{t}"], cwd=workdir)
     log("Rip complete.")
 
-def encode_and_tag(workdir, tracks, disc_no, disc_total, album, genre, target_dir, quality_args):
-    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TRCK, TPOS, TCON, ID3NoHeaderError
+def encode_and_tag(workdir, tracks, disc_no, disc_total, album, genre, target_dir, quality_args, composer=None):
+    from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TCOM, TRCK, TPOS, TCON, ID3NoHeaderError
 
     os.makedirs(target_dir, exist_ok=True)
     total = len(tracks)
@@ -803,6 +825,16 @@ def encode_and_tag(workdir, tracks, disc_no, disc_total, album, genre, target_di
         tags["TPOS"] = TPOS(encoding=3, text=f"{disc_no}/{disc_total}")
         if genre:
             tags["TCON"] = TCON(encoding=3, text=genre)
+        # Composer (TCOM, per-track override or album default) and Album
+        # Artist (TPE2, always the album-level composer when known) —
+        # classical only, in practice: this is what lets Plex/iTunes/Roon
+        # browse by composer instead of fragmenting into one "artist" per
+        # soloist/orchestra/conductor combination. See CLAUDE.md.
+        track_composer = t.get("composer") or composer
+        if track_composer:
+            tags["TCOM"] = TCOM(encoding=3, text=track_composer)
+        if composer:
+            tags["TPE2"] = TPE2(encoding=3, text=composer)
         tags.save(out_path)
         log(f"[{i}/{total}] Tagged  : {out_path}")
 
@@ -1001,7 +1033,8 @@ def main():
         for t in plan["tracks"]:
             t["_album_artist"] = plan["artist"]
         encode_and_tag(workdir, plan["tracks"], plan["disc_no"], plan["disc_total"],
-                        plan["album"], plan["genre"], target_dir, quality_args)
+                        plan["album"], plan["genre"], target_dir, quality_args,
+                        composer=plan.get("composer"))
         ok = True
     except subprocess.CalledProcessError as e:
         log(f"\nFAILED: {e}")

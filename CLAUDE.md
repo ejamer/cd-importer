@@ -147,13 +147,48 @@ still flag the choice to the user rather than silently deciding for a
 brand-new artist folder.
 
 `~/Music/library_manifest.json` (artists → albums → tracks, with
-per-album average bitrate and per-track `title`/`artist`/`album`/`track_number`/
-`disc_number`/`genre`/`duration_sec`/`bitrate_kbps`/`sample_rate_hz`) is
-a full rebuild from scratch every time (`update_manifest()`), not an
+per-album average bitrate and per-track `title`/`artist`/`album`/
+`album_artist`/`composer`/`track_number`/`disc_number`/`genre`/
+`duration_sec`/`bitrate_kbps`/`sample_rate_hz`) is a full rebuild from
+scratch every time (`update_manifest()`), not an
 incremental update — simpler and can't drift out of sync, and cheap
 enough (a few seconds of tag reads) given the library only grows one CD
 at a time. It never fails a rip: a manifest error just gets logged, same
 pattern as a missing cover.jpg.
+
+## Classical: composer tagging (TCOM/TPE2)
+
+Classical rips must have `composer` filled in on the plan — either the
+top-level field (whole-album composer, written to every track's `TCOM`
+and to the album's `TPE2`) or a per-track `"composer"` override for a
+mixed-composer disc (that track's `TCOM`; `TPE2` still comes from the
+top-level field, e.g. "Various Composers"). This isn't optional
+housekeeping: without it, `TPE1` (which correctly holds the *performer*
+— soloist/orchestra/conductor, not the composer) is the only thing
+Plex/iTunes/Roon have to group by, and every different soloist or
+ensemble fragments into its own "artist" — which is the exact
+findability problem that prompted adding this field on 2026-09-16.
+
+MusicBrainz doesn't give this to you for free: `release_to_plan()`
+deliberately doesn't auto-derive it, because the release-level
+artist-credit it already uses for `plan["artist"]` is the *performer*
+for classical, and getting the real composer means resolving each
+recording's linked work and that work's composer relationship — an
+extra API call per track, for data that's already documented as spotty
+for classical (see the gotchas below). So: fill in `composer` the same
+way you already curate genre/cover for a classical disc — you generally
+already know it (it's the whole reason you identified the disc), so
+this is rarely extra research, just remembering to put it in the right
+field instead of leaving it implicit in the artist/title text.
+
+Retagging existing classical albums (done as a one-time pass alongside
+adding this field): read each track's existing `TPE1`/title text for
+the composer name already embedded there (most of this library's
+classical rips have it, since composer identification was already part
+of confirming the plan — see the Fallback/Multi-CD sections above), and
+set `TCOM` per track + `TPE2` at the album level directly with mutagen,
+without re-ripping. Don't touch `TPE1` — it's already correctly the
+performer.
 
 ## Known gotchas (don't rediscover these)
 
