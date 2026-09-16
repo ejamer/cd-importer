@@ -20,9 +20,9 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
-import tempfile
 import unicodedata
 import urllib.request
 
@@ -593,12 +593,72 @@ def download_cover(dest_path, mbid=None, cover_url=None):
         "'cover_url' field in the tracklist JSON pointing at an image. ***")
     return False
 
-def rip_tracks(device, n_tracks, workdir):
+def _wav_seconds(path):
+    """Actual playable duration of a wav file in seconds, or None if it
+    doesn't exist or isn't readable. Deliberately doesn't trust the
+    'data' chunk's declared size (what wave.getnframes() reports):
+    cdparanoia writes that header upfront with the track's *full*
+    expected size before streaming any PCM into it, so a file killed
+    mid-write still claims to be complete-length in its own header.
+    Real bytes present on disk from the start of the data chunk to EOF,
+    divided by the format's bytes/sec, is the only honest measure of
+    how much actually got written."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(12)[:4] != b"RIFF":
+                return None
+            framerate = channels = sampwidth = None
+            while True:
+                chunk_id, chunk_size = struct.unpack("<4sI", f.read(8))
+                if chunk_id == b"fmt ":
+                    fmt = f.read(chunk_size)
+                    channels, framerate = struct.unpack("<HI", fmt[2:8])
+                    sampwidth = struct.unpack("<H", fmt[14:16])[0] // 8
+                elif chunk_id == b"data":
+                    if framerate is None:
+                        return None
+                    data_bytes = os.path.getsize(path) - f.tell()
+                    bytes_per_sec = framerate * channels * sampwidth
+                    return data_bytes / bytes_per_sec if bytes_per_sec > 0 else None
+                else:
+                    f.seek(chunk_size, 1)
+    except (FileNotFoundError, OSError, struct.error):
+        return None
+
+def tracks_needing_rip(workdir, n_tracks, disc_durations, tolerance_sec=1.5):
+    """Which 1-based track numbers still need a real cdparanoia pass:
+    missing entirely, or present but shorter than the disc's own
+    reported duration for that track — the signature of a rip that was
+    interrupted (killed, drive hiccup) partway through a track. Deletes
+    any short file it finds so a retry can't mistake it for done.
+    disc_durations may be None (TOC unreadable this call) — falls back
+    to "present at all" as the completeness check in that case."""
+    missing = []
+    for i in range(1, n_tracks + 1):
+        wav = os.path.join(workdir, f"track{i:02d}.cdda.wav")
+        got = _wav_seconds(wav)
+        expected = disc_durations[i - 1] if disc_durations and i - 1 < len(disc_durations) else None
+        if got is None:
+            missing.append(i)
+        elif expected is not None and got < expected - tolerance_sec:
+            log(f"track {i}: existing rip is short ({got:.1f}s of {expected:.1f}s expected) "
+                f"— discarding, will re-rip.")
+            os.remove(wav)
+            missing.append(i)
+    return missing
+
+def rip_tracks(device, n_tracks, workdir, only_tracks=None):
     if get_disc_track_count(device) is None:
         die(f"Can't read a disc on {device}. Is a CD inserted?")
-    log(f"\nRipping {n_tracks} track(s) from {device} with cdparanoia "
-        f"(this reads the whole disc — a few minutes)...")
-    run_logged(["cdparanoia", "-d", device, "-B", f"1-{n_tracks}"], cwd=workdir)
+    if only_tracks is None or len(only_tracks) == n_tracks:
+        log(f"\nRipping {n_tracks} track(s) from {device} with cdparanoia "
+            f"(this reads the whole disc — a few minutes)...")
+        run_logged(["cdparanoia", "-d", device, "-B", f"1-{n_tracks}"], cwd=workdir)
+    elif only_tracks:
+        log(f"\nPicking up where the last attempt left off — re-ripping "
+            f"{len(only_tracks)} track(s): {only_tracks}")
+        for t in only_tracks:
+            run_logged(["cdparanoia", "-d", device, "-B", f"{t}-{t}"], cwd=workdir)
     log("Rip complete.")
 
 def encode_and_tag(workdir, tracks, disc_no, disc_total, album, genre, target_dir, quality_args):
@@ -802,20 +862,27 @@ def main():
         q = args.quality if args.quality is not None else 0
         quality_args = ["-q:a", str(q)]
 
+    # A stable (not random-per-run) workdir, so a rip that dies partway
+    # through — killed, drive hiccup, stuck on a scratch — can be resumed
+    # by rerunning the exact same command: already-good tracks are found
+    # here and only the missing/short ones get re-ripped.
     os.makedirs(WORKDIR_BASE, exist_ok=True)
+    workdir = os.path.join(WORKDIR_BASE, f"cdrip_{sanitize(plan['album'])}_disc{plan['disc_no']}")
+    os.makedirs(workdir, exist_ok=True)
     ok = False
-    with tempfile.TemporaryDirectory(prefix="cdrip_", dir=WORKDIR_BASE) as workdir:
-        try:
-            rip_tracks(args.device, n_tracks, workdir)
-            for t in plan["tracks"]:
-                t["_album_artist"] = plan["artist"]
-            encode_and_tag(workdir, plan["tracks"], plan["disc_no"], plan["disc_total"],
-                            plan["album"], plan["genre"], target_dir, quality_args)
-            ok = True
-        except subprocess.CalledProcessError as e:
-            log(f"\nFAILED: {e}")
+    try:
+        missing = tracks_needing_rip(workdir, n_tracks, disc_durations)
+        rip_tracks(args.device, n_tracks, workdir, only_tracks=missing)
+        for t in plan["tracks"]:
+            t["_album_artist"] = plan["artist"]
+        encode_and_tag(workdir, plan["tracks"], plan["disc_no"], plan["disc_total"],
+                        plan["album"], plan["genre"], target_dir, quality_args)
+        ok = True
+    except subprocess.CalledProcessError as e:
+        log(f"\nFAILED: {e}")
 
     if ok:
+        shutil.rmtree(workdir, ignore_errors=True)
         cover_path = os.path.join(album_dir, "cover.jpg")
         if not os.path.exists(cover_path):
             download_cover(cover_path, mbid=plan.get("mbid"), cover_url=plan.get("cover_url"))
@@ -829,7 +896,10 @@ def main():
             except Exception as e:
                 log(f"Could not eject {args.device} ({e}); eject manually.")
     else:
-        log(f"\nImport failed — disc left in drive, files not finalized. See log: {log_path}")
+        log(f"\nImport failed — disc left in drive, files not finalized. Tracks ripped "
+            f"so far are kept in {workdir}; rerun the same command (once whatever went "
+            f"wrong — a scratch, a stuck drive — is sorted out) and it'll pick up where "
+            f"it left off instead of re-ripping everything. See log: {log_path}")
         sys.exit(1)
 
 if __name__ == "__main__":
