@@ -90,6 +90,20 @@ def sanitize(name):
     name = name.replace("/", "-")
     return re.sub(r'[\\:*?"<>|]', "_", name).strip()
 
+# MusicBrainz style guidelines use typographic apostrophes; the library uses
+# plain ASCII ones (user preference), in both tags and filenames.
+APOSTROPHES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'"})
+
+def straighten_apostrophes(plan):
+    for key in ("artist", "album", "composer"):
+        if plan.get(key):
+            plan[key] = plan[key].translate(APOSTROPHES)
+    for t in plan["tracks"]:
+        for key in ("title", "artist", "composer"):
+            if t.get(key):
+                t[key] = t[key].translate(APOSTROPHES)
+    return plan
+
 def target_dir_for(album_dir, plan):
     return album_dir if plan["disc_total"] == 1 else os.path.join(album_dir, f"Disc {plan['disc_no']}")
 
@@ -254,6 +268,8 @@ def find_fuzzy_duplicate(album_title, expect_path=None):
             rel = os.path.join(base, name)
             if _title_key(name) == key and rel != expect_path:
                 return rel
+    if not os.path.isdir(MUSIC_ROOT):  # e.g. a fresh --root
+        return None
     for artist_name in os.listdir(MUSIC_ROOT):
         if artist_name.startswith(".") or artist_name in genre_dirs:
             continue
@@ -850,6 +866,7 @@ def encode_and_tag(workdir, tracks, disc_no, disc_total, album, genre, target_di
         log(f"[{i}/{total}] Tagged  : {out_path}")
 
 def main():
+    global MUSIC_ROOT
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--artist", help="Omit to auto-identify the disc by MusicBrainz DiscID")
     ap.add_argument("--album", help="Omit to auto-identify the disc by MusicBrainz DiscID")
@@ -877,7 +894,12 @@ def main():
     ap.add_argument("--no-eject", action="store_true", help="Don't eject the disc after a successful import")
     ap.add_argument("--no-manifest", action="store_true",
                      help="Don't regenerate ~/Music/library_manifest.json after a successful import")
+    ap.add_argument("--root", help="Library root to rip into instead of ~/Music (e.g. ~/Audiobooks). "
+                     "Implies --no-manifest, since the manifest describes ~/Music only")
     args = ap.parse_args()
+    if args.root:
+        MUSIC_ROOT = os.path.abspath(os.path.expanduser(args.root))
+        args.no_manifest = True
 
     check_tools()
 
@@ -932,6 +954,8 @@ def main():
         # The DiscID pins the exact medium — trust it over --disc's default
         # of 1, which would otherwise mistag disc 2+ of a multi-disc release.
         plan = release_to_plan(release, matched_disc_no or args.disc, args.genre, args.artist or "")
+
+    straighten_apostrophes(plan)
 
     if args.dump_tracklist:
         os.makedirs(os.path.dirname(os.path.abspath(args.dump_tracklist)), exist_ok=True)

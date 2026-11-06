@@ -99,6 +99,44 @@ correctly identified by hand:
    URL (`volume_to_plan()` falls back to it when a volume has no
    `cover_url` of its own).
 
+## Audiobooks / radio dramas (`--root ~/Audiobooks`)
+
+Audiobooks live in `~/Audiobooks/`, a separate library from `~/Music`,
+and **not** artist-nested: each title (or series) gets its own top-level
+folder, matching what was already there (Doctor Who, Dalek Empire, Star
+Wars...). First done for the BBC radio *The Hobbit* (5 CDs, 2026-10-22).
+
+```
+python3 rip_cd.py --root ~/Audiobooks --subfolder "" --tracklist-json plan.json --yes
+```
+
+- `--root` swaps the library root (`MUSIC_ROOT`) for this run and implies
+  `--no-manifest` — the manifest describes `~/Music` only. `--subfolder ""`
+  gives the flat `~/Audiobooks/<Title>/Disc N/` layout.
+- Hand-edit the dumped plan before ripping: `genre` → `"Audiobook"` (same
+  `TCON` as the pre-existing Star Wars set), and `artist` (album + every
+  track) → the author alone. MusicBrainz credits audiobooks/dramatisations
+  as e.g. "J.R.R. Tolkien dramatised by Michael Kilgarriff", which makes a
+  bad grouping key.
+- **Multi-disc sets: pin every disc to one release with `--mbid <id>
+  --disc N`** once disc 1 has identified it. DiscID auto-ID matched
+  *different editions* per disc on *The Hobbit* (disc 3 → a 4-disc German
+  release, tagged "3 of 4"), since the same discs got pressed into several
+  releases. Exception: if the pinned release's track count for a disc
+  doesn't match the physical disc (`print_plan()`'s MISMATCH flag), fall
+  back to plain DiscID auto-ID for that disc and take its tracklist if
+  durations match — *The Hobbit*'s disc 5 had 9 tracks (music + a Tolkien
+  interview) where the pinned release listed only 4. `mbid` then only
+  affects cover lookup, which is skipped once `cover.jpg` exists from disc 1.
+- Apostrophes are always straight (`'`), in tags and filenames — user
+  preference. `straighten_apostrophes()` in `main()` normalizes every plan
+  (MusicBrainz, boxset cache, or hand-written JSON) before dump/rip, so
+  you don't need to fix this by hand.
+- The drive can report "can't read a disc yet" right after a disc swap,
+  and then `--dump-tracklist` builds the plan with no TOC check. Always do
+  the foreground preview (no `--yes`) before ripping. It re-reads the disc
+  and catches this.
+
 ## Artist folders & the library manifest
 
 The library was reorganized on 2026-09-16 from a flat `~/Music/<Album>/`
